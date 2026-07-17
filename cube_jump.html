@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Jump Cube</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      background: #1a1a2e;
+      overflow: hidden;
+      touch-action: none;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    canvas {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // ============================================
+    // GAME CONFIGURATION
+    // ============================================
+    const CONFIG = {
+      gravity: 0.8,
+      jumpForce: -16,
+      groundHeight: 0.85,
+      initialSpeed: 6,
+      maxSpeed: 18,
+      speedIncrement: 0.003,
+      obstacleInterval: 120,
+      cubeSize: 50,
+      spikeHeight: 40,
+      spikeWidth: 30,
+      particleCount: 12,
+      colors: {
+        sky: ['#1a1a2e', '#16213e', '#0f3460'],
+        ground: '#0a0a1a',
+        groundLine: '#e94560',
+        cube: '#e94560',
+        cubeFace: '#ff6b81',
+        spike: '#e94560',
+        spikeShadow: '#a82040',
+        particle: '#ff6b81',
+        text: '#ffffff',
+        textShadow: '#e94560'
+      }
+    };
+
+    // ============================================
+    // GAME STATE
+    // ============================================
+    let gameState = 'start';
+    let score = 0;
+    let bestScore = parseInt(localStorage.getItem('jumpCubeBest')) || 0;
+    let gameSpeed = CONFIG.initialSpeed;
+    let frameCount = 0;
+    let cameraX = 0;
+    let lastTime = 0;
+    let deltaTime = 1;
+    let targetFPS = 60;
+    let frameInterval = 1000 / targetFPS;
+
+    // ============================================
+    // ENTITIES
+    // ============================================
+    let cube = {
+      x: 100,
+      y: 0,
+      width: CONFIG.cubeSize,
+      height: CONFIG.cubeSize,
+      velocityY: 0,
+      isJumping: false,
+      jumpCount: 0,
+      maxJumps: 2,
+      rotation: 0,
+      targetRotation: 0
+    };
+
+    let particles = [];
+    let obstacles = [];
+    let groundTiles = [];
+    let bgClouds = [];
+    let bgStars = [];
+
+    // ============================================
+    // CANVAS SETUP
+    // ============================================
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      if (gameState === 'start' || gameState === 'gameover') {
+        cube.y = canvas.height * CONFIG.groundHeight - cube.height;
+      }
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // ============================================
+    // INPUT HANDLING
+    // ============================================
+    function handleJump() {
+      if (gameState === 'start') {
+        startGame();
+        return;
+      }
+      if (gameState === 'gameover') {
+        return;
+      }
+      if (cube.jumpCount < cube.maxJumps) {
+        cube.velocityY = CONFIG.jumpForce;
+        cube.isJumping = true;
+        cube.jumpCount++;
+        spawnParticles(cube.x + cube.width / 2, cube.y + cube.height, 5, false);
+      }
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Space' || e.code === 'ArrowUp') {
+        e.preventDefault();
+        handleJump();
+      }
+    });
+    window.addEventListener('click', handleJump);
+    window.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      handleJump();
+    });
+
+    // ============================================
+    // PARTICLE SYSTEM
+    // ============================================
+    function spawnParticles(x, y, count, isCrash) {
+      for (let i = 0; i < count; i++) {
+        particles.push({
+          x: x,
+          y: y,
+          velocityX: (Math.random() - 0.5) * (isCrash ? 15 : 8),
+          velocityY: (Math.random() - 0.5) * (isCrash ? 15 : 8) - (isCrash ? 5 : 2),
+          size: Math.random() * (isCrash ? 8 : 5) + 2,
+          life: 1,
+          decay: Math.random() * 0.03 + 0.02,
+          color: isCrash ? CONFIG.colors.spike : CONFIG.colors.particle
+        });
+      }
+    }
+
+    function updateParticles() {
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.velocityX;
+        p.y += p.velocityY;
+        p.velocityY += 0.3;
+        p.life -= p.decay;
+        p.size *= 0.96;
+        if (p.life <= 0) {
+          particles.splice(i, 1);
+        }
+      }
+    }
+
+    function drawParticles() {
+      particles.forEach(p => {
+        ctx.save();
+        ctx.globalAlpha = p.life;
+        ctx.fillStyle = p.color;
+        ctx.shadowColor = p.color;
+        ctx.shadowBlur = 10;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      });
+    }
+
+    // ============================================
+    // BACKGROUND
+    // ============================================
+    function initBackground() {
+      bgStars = [];
+      bgClouds = [];
+      for (let i = 0; i < 50; i++) {
+        bgStars.push({
+          x: Math.random() * canvas.width,
+          y: Math.random() * canvas.height * 0.6,
+          size: Math.random() * 2 + 0.5,
+          twinkle: Math.random() * Math.PI * 2
+        });
+      }
+      for (let i = 0; i < 5; i++) {
+        bgClouds.push({
+          x: Math.random() * canvas.width,
+          y: Math.random() * canvas.height * 0.3 + 50,
+          width: Math.random() * 100 + 80,
+          height: Math.random() * 30 + 20,
+          speed: Math.random() * 0.3 + 0.1
+        });
+      }
+    }
+
+    function drawBackground() {
+      const groundY = canvas.height * CONFIG.groundHeight;
+      
+      // Sky gradient
+      const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      gradient.addColorStop(0, CONFIG.colors.sky[0]);
+      gradient.addColorStop(0.5, CONFIG.colors.sky[1]);
+      gradient.addColorStop(1, CONFIG.colors.sky[2]);
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Stars
+      bgStars.forEach(star => {
+        star.twinkle += 0.02;
+        const alpha = 0.3 + Math.sin(star.twinkle) * 0.3;
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      ctx.globalAlpha = 1;
+
+      // Clouds
+      bgClouds.forEach(cloud => {
+        cloud.x -= cloud.speed;
+        if (cloud.x + cloud.width < 0) {
+          cloud.x = canvas.width + cloud.width;
+        }
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+        ctx.beginPath();
+        ctx.ellipse(cloud.x, cloud.y, cloud.width / 2, cloud.height / 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // Ground
+      const groundGradient = ctx.createLinearGradient(0, groundY, 0, canvas.height);
+      groundGradient.addColorStop(0, '#1a1a3e');
+      groundGradient.addColorStop(1, CONFIG.colors.ground);
+      ctx.fillStyle = groundGradient;
+      ctx.fillRect(0, groundY, canvas.width, canvas.height - groundY);
+
+      // Ground line
+      ctx.strokeStyle = CONFIG.colors.groundLine;
+      ctx.lineWidth = 3;
+      ctx.shadowColor = CONFIG.colors.groundLine;
+      ctx.shadowBlur = 15;
+      ctx.beginPath();
+      ctx.moveTo(0, groundY);
+      ctx.lineTo(canvas.width, groundY);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      // Ground details
+      ctx.fillStyle = 'rgba(233, 69, 96, 0.1)';
+      for (let x = -((cameraX % 50)); x < canvas.width; x += 50) {
+        ctx.fillRect(x, groundY + 5, 2, 10);
+      }
+    }
+
+    // ============================================
+    // OBSTACLES
+    // ============================================
+    function spawnObstacle() {
+      const groundY = canvas.height * CONFIG.groundHeight;
+      const type = Math.random() < 0.6 ? 'spike' : 'block';
+      
+      if (type === 'spike') {
+        obstacles.push({
+          x: canvas.width + 100,
+          y: groundY - CONFIG.spikeHeight,
+          width: CONFIG.spikeWidth,
+          height: CONFIG.spikeHeight,
+          type: 'spike'
+        });
+      } else {
+        const blockHeight = Math.random() * 40 + 30;
+        obstacles.push({
+          x: canvas.width + 100,
+          y: groundY - blockHeight,
+          width: 40,
+          height: blockHeight,
+          type: 'block'
+        });
+      }
+    }
+
+    function updateObstacles() {
+      for (let i = obstacles.length - 1; i >= 0; i--) {
+        obstacles[i].x -= gameSpeed;
+        if (obstacles[i].x + obstacles[i].width < 0) {
+          obstacles.splice(i, 1);
+        }
+      }
+    }
+
+    function drawObstacles() {
+      obstacles.forEach(obs => {
+        ctx.save();
+        if (obs.type === 'spike') {
+          // Spike shadow
+          ctx.fillStyle = CONFIG.colors.spikeShadow;
+          ctx.beginPath();
+          ctx.moveTo(obs.x + 5, obs.y + obs.height);
+          ctx.lineTo(obs.x + obs.width / 2 + 5, obs.y);
+          ctx.lineTo(obs.x + obs.width + 5, obs.y + obs.height);
+          ctx.closePath();
+          ctx.fill();
+          
+          // Spike
+          ctx.fillStyle = CONFIG.colors.spike;
+          ctx.shadowColor = CONFIG.colors.spike;
+          ctx.shadowBlur = 15;
+          ctx.beginPath();
+          ctx.moveTo(obs.x, obs.y + obs.height);
+          ctx.lineTo(obs.x + obs.width / 2, obs.y);
+          ctx.lineTo(obs.x + obs.width, obs.y + obs.height);
+          ctx.closePath();
+          ctx.fill();
+        } else {
+          // Block
+          ctx.fillStyle = CONFIG.colors.spikeShadow;
+          ctx.fillRect(obs.x + 3, obs.y + 3, obs.width, obs.height);
+          ctx.fillStyle = CONFIG.colors.spike;
+          ctx.shadowColor = CONFIG.colors.spike;
+          ctx.shadowBlur = 15;
+          ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+        }
+        ctx.restore();
+      });
+    }
+
+    // ============================================
+    // COLLISION DETECTION
+    // ============================================
+    function checkCollision() {
+      const cubeLeft = cube.x + 5;
+      const cubeRight = cube.x + cube.width - 5;
+      const cubeTop = cube.y + 5;
+      const cubeBottom = cube.y + cube.height - 5;
+
+      for (let obs of obstacles) {
+        let obsLeft = obs.x + 3;
+        let obsRight = obs.x + obs.width - 3;
+        let obsTop = obs.y + 3;
+        let obsBottom = obs.y + obs.height;
+
+        if (obs.type === 'spike') {
+          obsTop = obs.y + obs.height * 0.3;
+        }
+
+        if (cubeRight > obsLeft && cubeLeft < obsRight &&
+            cubeBottom > obsTop && cubeTop < obsBottom) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // ============================================
+    // CUBE
+    // ============================================
+    function updateCube() {
+      const groundY = canvas.height * CONFIG.groundHeight;
+      
+      cube.velocityY += CONFIG.gravity;
+      cube.y += cube.velocityY;
+
+      // Ground collision
+      if (cube.y + cube.height >= groundY) {
+        if (cube.isJumping) {
+          spawnParticles(cube.x + cube.width / 2, groundY, CONFIG.particleCount, false);
+        }
+        cube.y = groundY - cube.height;
+        cube.velocityY = 0;
+        cube.isJumping = false;
+        cube.jumpCount = 0;
+        cube.targetRotation = 0;
+      }
+
+      // Rotation while jumping
+      if (cube.isJumping) {
+        cube.targetRotation += 0.15;
+      }
+      cube.rotation += (cube.targetRotation - cube.rotation) * 0.1;
+    }
+
+    function drawCube() {
+      ctx.save();
+      ctx.translate(cube.x + cube.width / 2, cube.y + cube.height / 2);
+      ctx.rotate(cube.rotation);
+
+      // Cube shadow
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+      ctx.fillRect(-cube.width / 2 + 5, -cube.height / 2 + 5, cube.width, cube.height);
+
+      // Cube glow
+      ctx.shadowColor = CONFIG.colors.cube;
+      ctx.shadowBlur = 20;
+      
+      // Cube body
+      ctx.fillStyle = CONFIG.colors.cube;
+      ctx.fillRect(-cube.width / 2, -cube.height / 2, cube.width, cube.height);
+
+      // Cube face (lighter)
+      ctx.fillStyle = CONFIG.colors.cubeFace;
+      ctx.fillRect(-cube.width / 2 + 5, -cube.height / 2 + 5, cube.width - 10, cube.height - 10);
+
+      // Inner highlight
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+      ctx.fillRect(-cube.width / 2 + 8, -cube.height / 2 + 8, cube.width - 16, cube.height - 16);
+
+      ctx.restore();
+    }
+
+    // ============================================
+    // UI
+    // ============================================
+    function drawUI() {
+      const groundY = canvas.height * CONFIG.groundHeight;
+
+      // Score display
+      ctx.fillStyle = CONFIG.colors.text;
+      ctx.font = 'bold 32px "Segoe UI", Tahoma, Geneva, Verdana, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.shadowColor = CONFIG.colors.textShadow;
+      ctx.shadowBlur = 10;
+      ctx.fillText(Math.floor(score), canvas.width / 2, 60);
+      ctx.shadowBlur = 0;
+
+      // Best score
+      ctx.font = 'bold 18px "Segoe UI", Tahoma, Geneva, Verdana, sans-serif';
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+      ctx.fillText(`BEST: ${bestScore}`, canvas.width / 2, 90);
+
+      // Speed indicator
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+      ctx.font = '14px "Segoe UI", Tahoma, Geneva, Verdana, sans-serif';
+      ctx.fillText(`SPEED: ${gameSpeed.toFixed(1)}`, canvas.width / 2, 115);
+    }
+
+    function drawStartScreen() {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Title
+      ctx.fillStyle = CONFIG.colors.text;
+      ctx.font = 'bold 72px "Segoe UI", Tahoma, Geneva, Verdana, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.shadowColor = CONFIG.colors.textShadow;
+      ctx.shadowBlur = 20;
+      ctx.fillText('JUMP CUBE', canvas.width / 2, canvas.height / 2 - 50);
+      ctx.shadowBlur = 0;
+
+      // Subtitle
+      ctx.font = '20px "Segoe UI", Tahoma, Geneva, Verdana, sans-serif';
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+      ctx.fillText('Tap, Click, or Press Space to Jump', canvas.width / 2, canvas.height / 2 + 10);
+
+      // Best score
+      if (bestScore > 0) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+        ctx.font = '18px "Segoe UI", Tahoma, Geneva, Verdana, sans-serif';
+        ctx.fillText(`Best Score: ${bestScore}`, canvas.width / 2, canvas.height / 2 + 50);
+      }
+
+      // Start prompt
+      ctx.fillStyle = CONFIG.colors.cube;
+      ctx.font = 'bold 24px "Segoe UI", Tahoma, Geneva, Verdana, sans-serif';
+      ctx.fillText('TAP TO START', canvas.width / 2, canvas.height / 2 + 100);
+
+      // Animated cube
+      const time = Date.now() / 1000;
+      cube.y = canvas.height * CONFIG.groundHeight - cube.height + Math.sin(time * 3) * 10;
+      drawCube();
+    }
+
+    function drawGameOverScreen() {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Game Over text
+      ctx.fillStyle = CONFIG.colors.text;
+      ctx.font = 'bold 64px "Segoe UI", Tahoma, Geneva, Verdana, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.shadowColor = CONFIG.colors.textShadow;
+      ctx.shadowBlur = 20;
+      ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 80);
+      ctx.shadowBlur = 0;
+
+      // Score
+      ctx.fillStyle = CONFIG.colors.text;
+      ctx.font = 'bold 36px "Segoe UI", Tahoma, Geneva, Verdana, sans-serif';
+      ctx.fillText(`Score: ${Math.floor(score)}`, canvas.width / 2, canvas.height / 2 - 20);
+
+      // Best score
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+      ctx.font = '24px "Segoe UI", Tahoma, Geneva, Verdana, sans-serif';
+      ctx.fillText(`Best: ${bestScore}`, canvas.width / 2, canvas.height / 2 + 20);
+
+      // New best indicator
+      if (Math.floor(score) >= bestScore && score > 0) {
+        ctx.fillStyle = CONFIG.colors.cube;
+        ctx.font = 'bold 20px "Segoe UI", Tahoma, Geneva, Verdana, sans-serif';
+        ctx.fillText('★ NEW BEST! ★', canvas.width / 2, canvas.height / 2 + 55);
+      }
+
+      // Restart prompt
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+      ctx.font = '18px "Segoe UI", Tahoma, Geneva, Verdana, sans-serif';
+      ctx.fillText('Tap or Press Space to Restart', canvas.width / 2, canvas.height / 2 + 100);
+    }
+
+    // ============================================
+    // GAME LOOP
+    // ============================================
+    function startGame() {
+      gameState = 'playing';
+      score = 0;
+      gameSpeed = CONFIG.initialSpeed;
+      obstacles = [];
+      particles = [];
+      frameCount = 0;
+      cameraX = 0;
+      cube.y = canvas.height * CONFIG.groundHeight - cube.height;
+      cube.velocityY = 0;
+      cube.isJumping = false;
+      cube.jumpCount = 0;
+      cube.rotation = 0;
+      cube.targetRotation = 0;
+      initBackground();
+    }
+
+    function endGame() {
+      gameState = 'gameover';
+      spawnParticles(cube.x + cube.width / 2, cube.y + cube.height / 2, 30, true);
+      
+      if (score > bestScore) {
+        bestScore = Math.floor(score);
+        localStorage.setItem('jumpCubeBest', bestScore);
+      }
+    }
+
+    function update(deltaTime) {
+      if (gameState !== 'playing') return;
+
+      frameCount++;
+      score += gameSpeed * 0.1;
+      gameSpeed = Math.min(CONFIG.maxSpeed, gameSpeed + CONFIG.speedIncrement);
+
+      updateCube();
+      updateParticles();
+
+      // Spawn obstacles
+      if (frameCount % Math.floor(CONFIG.obstacleInterval / (gameSpeed / CONFIG.initialSpeed)) === 0) {
+        spawnObstacle();
+      }
+
+      updateObstacles();
+
+      // Check collision
+      if (checkCollision()) {
+        endGame();
+      }
+    }
+
+    function draw() {
+      // Clear canvas
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Draw background
+      drawBackground();
+
+      // Draw obstacles
+      drawObstacles();
+
+      // Draw particles
+      drawParticles();
+
+      // Draw cube
+      drawCube();
+
+      // Draw UI
+      if (gameState === 'playing') {
+        drawUI();
+      } else if (gameState === 'start') {
+        drawStartScreen();
+      } else if (gameState === 'gameover') {
+        drawUI();
+        drawGameOverScreen();
+      }
+    }
+
+    function gameLoop(currentTime) {
+      requestAnimationFrame(gameLoop);
+
+      const elapsed = currentTime - lastTime;
+      if (elapsed < frameInterval) return;
+      
+      deltaTime = elapsed / frameInterval;
+      lastTime = currentTime - (elapsed % frameInterval);
+
+      update(deltaTime);
+      draw();
+    }
+
+    // ============================================
+    // INITIALIZATION
+    // ============================================
+    function init() {
+      resizeCanvas();
+      initBackground();
+      cube.y = canvas.height * CONFIG.groundHeight - cube.height;
+      lastTime = performance.now();
+      requestAnimationFrame(gameLoop);
+    }
+
+    init();
+  </script>
+</body>
+</html>
