@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Flappy Rocket</title>
+<style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #000;
+    touch-action: manipulation;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  canvas {
+    display: block;
+  }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+(() => {
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+
+  // --- Utility ---
+  const rand = (min, max) => Math.random() * (max - min) + min;
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+  // --- State ---
+  let W, H;
+  let dpr = window.devicePixelRatio || 1;
+
+  // --- Settings ---
+  const ROCKET_W = 28;
+  const ROCKET_H = 42;
+  const GATE_W = 54;
+  const GATE_GAP = 148;
+  const GATE_SPAWN_DIST = 260;
+  const BASE_GRAVITY = 0.32;
+  const BASE_THRUST = -5.8;
+  const MAX_SPEED = 8;
+  const FLOOR_H = 0;
+
+  // --- Game variables ---
+  let state = 'start'; // start | playing | over
+  let score = 0;
+  let bestScore = 0;
+  let frame = 0;
+  let gameSpeed = 2.8;
+  let speedTimer = 0;
+
+  // --- Stars ---
+  const stars = [];
+  function initStars() {
+    stars.length = 0;
+    for (let i = 0; i < 140; i++) {
+      stars.push({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        size: rand(0.4, 1.8),
+        twinkle: rand(0, Math.PI * 2),
+        speed: rand(0.15, 0.5)
+      });
+    }
+  }
+
+  // --- Rocket ---
+  const rocket = { x: 0, y: 0, vy: 0, angle: 0, thrusting: false, trail: [] };
+  function resetRocket() {
+    rocket.x = W * 0.25;
+    rocket.y = H * 0.5;
+    rocket.vy = 0;
+    rocket.angle = 0;
+    rocket.thrusting = false;
+    rocket.trail = [];
+  }
+
+  // --- Gates ---
+  let gates = [];
+  function spawnGate() {
+    const gapY = rand(80, H - 80 - GATE_GAP);
+    gates.push({
+      x: W + GATE_W,
+      gapY: gapY,
+      scored: false
+    });
+  }
+
+  // --- Particles ---
+  let particles = [];
+  function spawnFlame(x, y, angle) {
+    const count = 3;
+    for (let i = 0; i < count; i++) {
+      particles.push({
+        type: 'flame',
+        x: x + rand(-3, 3),
+        y: y + rand(-3, 3),
+        vx: rand(-0.6, 0.6),
+        vy: rand(1.2, 3),
+        life: rand(10, 18),
+        maxLife: 18,
+        size: rand(2, 5)
+      });
+    }
+  }
+
+  function spawnExplosion(x, y) {
+    for (let i = 0; i < 35; i++) {
+      const angle = rand(0, Math.PI * 2);
+      const speed = rand(2, 9);
+      particles.push({
+        type: 'explosion',
+        x: x,
+        y: y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: rand(20, 40),
+        maxLife: 40,
+        size: rand(2, 6)
+      });
+    }
+    for (let i = 0; i < 20; i++) {
+      const angle = rand(0, Math.PI * 2);
+      const speed = rand(1, 4);
+      particles.push({
+        type: 'spark',
+        x: x,
+        y: y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: rand(30, 60),
+        maxLife: 60,
+        size: rand(1, 3)
+      });
+    }
+  }
+
+  function updateParticles() {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      if (p.type === 'flame') p.life--;
+      else p.life--;
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+  }
+
+  function drawParticles() {
+    for (const p of particles) {
+      const t = p.life / p.maxLife;
+      if (p.type === 'flame') {
+        const r = Math.floor(255 * t);
+        const g = Math.floor(180 * t);
+        const b = Math.floor(50 * t);
+        ctx.globalAlpha = t;
+        ctx.fillStyle = `rgb(${r},${g},${b})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * t, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (p.type === 'explosion') {
+        ctx.globalAlpha = t;
+        ctx.fillStyle = `rgb(255,${Math.floor(200 * t)},${Math.floor(50 * t)})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (p.type === 'spark') {
+        ctx.globalAlpha = t;
+        ctx.fillStyle = `rgb(255,255,${Math.floor(150 * t)})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // --- Collision ---
+  function checkGateCollision() {
+    const rx = rocket.x;
+    const ry = rocket.y;
+    const rw = ROCKET_W * 0.7;
+    const rh = ROCKET_H * 0.7;
+
+    for (const g of gates) {
+      if (rx + rw / 2 > g.x && rx - rw / 2 < g.x + GATE_W) {
+        if (ry - rh / 2 < g.gapY || ry + rh / 2 > g.gapY + GATE_GAP) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function checkEdgeCollision() {
+    return rocket.y - ROCKET_H / 2 < 0 || rocket.y + ROCKET_H / 2 > H;
+  }
+
+  // --- Drawing ---
+  function drawBackground() {
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, '#05030f');
+    grad.addColorStop(1, '#1a0a2e');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    // Stars
+    for (const s of stars) {
+      const tw = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(s.twinkle + frame * 0.04));
+      ctx.fillStyle = `rgba(200,220,255,${tw})`;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Subtle nebula
+    const nebulaX = W * 0.7 + Math.sin(frame * 0.005) * 40;
+    const nebulaY = H * 0.3 + Math.cos(frame * 0.007) * 20;
+    const neb = ctx.createRadialGradient(nebulaX, nebulaY, 0, nebulaX, nebulaY, 220);
+    neb.addColorStop(0, 'rgba(80,20,180,0.06)');
+    neb.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = neb;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  function drawGate(g) {
+    const x = g.x;
+    const gapTop = g.gapY;
+    const gapBot = g.gapY + GATE_GAP;
+
+    // Top gate
+    const topGrad = ctx.createLinearGradient(x, 0, x + GATE_W, 0);
+    topGrad.addColorStop(0, '#00ffcc');
+    topGrad.addColorStop(0.5, '#00ccaa');
+    topGrad.addColorStop(1, '#009977');
+    ctx.fillStyle = topGrad;
+    ctx.fillRect(x, 0, GATE_W, gapTop);
+
+    // Top glow
+    ctx.shadowColor = '#00ffcc';
+    ctx.shadowBlur = 18;
+    ctx.fillStyle = topGrad;
+    ctx.fillRect(x, 0, GATE_W, gapTop);
+    ctx.shadowBlur = 0;
+
+    // Bottom gate
+    const botGrad = ctx.createLinearGradient(x, 0, x + GATE_W, 0);
+    botGrad.addColorStop(0, '#00ffcc');
+    botGrad.addColorStop(0.5, '#00ccaa');
+    botGrad.addColorStop(1, '#009977');
+    ctx.fillStyle = botGrad;
+    ctx.fillRect(x, gapBot, GATE_W, H - gapBot);
+
+    ctx.shadowColor = '#00ffcc';
+    ctx.shadowBlur = 18;
+    ctx.fillStyle = botGrad;
+    ctx.fillRect(x, gapBot, GATE_W, H - gapBot);
+    ctx.shadowBlur = 0;
+
+    // Gate edges
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.5;
+    ctx.shadowColor = '#ffffff';
+    ctx.shadowBlur = 6;
+    ctx.strokeRect(x, 0, GATE_W, gapTop);
+    ctx.strokeRect(x, gapBot, GATE_W, H - gapBot);
+    ctx.shadowBlur = 0;
+
+    // Gate laser line (glowing)
+    const laserY = gapTop;
+    const laserGrad = ctx.createLinearGradient(x, laserY, x + GATE_W, laserY);
+    laserGrad.addColorStop(0, '#00ffcc');
+    laserGrad.addColorStop(0.5, '#ffffff');
+    laserGrad.addColorStop(1, '#00ffcc');
+    ctx.strokeStyle = laserGrad;
+    ctx.lineWidth = 2.5;
+    ctx.shadowColor = '#00ffcc';
+    ctx.shadowBlur = 14;
+    ctx.beginPath();
+    ctx.moveTo(x, laserY);
+    ctx.lineTo(x + GATE_W, laserY);
+    ctx.stroke();
+
+    const laserGrad2 = ctx.createLinearGradient(x, gapBot, x + GATE_W, gapBot);
+    laserGrad2.addColorStop(0, '#00ffcc');
+    laserGrad2.addColorStop(0.5, '#ffffff');
+    laserGrad2.addColorStop(1, '#00ffcc');
+    ctx.strokeStyle = laserGrad2;
+    ctx.beginPath();
+    ctx.moveTo(x, gapBot);
+    ctx.lineTo(x + GATE_W, gapBot);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Scanning lines
+    const scanY = gapTop + (GATE_GAP * 0.5) + Math.sin(frame * 0.1) * (GATE_GAP * 0.3);
+    ctx.strokeStyle = 'rgba(0,255,204,0.15)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, scanY);
+    ctx.lineTo(x + GATE_W, scanY);
+    ctx.stroke();
+  }
+
+  function drawRocket() {
+    ctx.save();
+    ctx.translate(rocket.x, rocket.y);
+    ctx.rotate(rocket.angle);
+
+    // Body
+    const bodyGrad = ctx.createLinearGradient(-ROCKET_W / 2, 0, ROCKET_W / 2, 0);
+    bodyGrad.addColorStop(0, '#ff4466');
+    bodyGrad.addColorStop(0.5, '#ff7799');
+    bodyGrad.addColorStop(1, '#ff4466');
+    ctx.fillStyle = bodyGrad;
+    ctx.shadowColor = '#ff4466';
+    ctx.shadowBlur = 16;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, ROCKET_W / 2, ROCKET_H / 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // Nose
+    ctx.fillStyle = '#ffffff';
+    ctx.shadowColor = '#ffffff';
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.moveTo(0, -ROCKET_H / 2);
+    ctx.lineTo(-6, -ROCKET_H / 2 + 10);
+    ctx.lineTo(6, -ROCKET_H / 2 + 10);
+    ctx.closePath();
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // Window
+    ctx.fillStyle = '#00ffff';
+    ctx.shadowColor = '#00ffff';
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.arc(0, -4, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // Fins
+    ctx.fillStyle = '#cc3355';
+    ctx.beginPath();
+    ctx.moveTo(-ROCKET_W / 2 + 2, 8);
+    ctx.lineTo(-ROCKET_W / 2 - 8, 16);
+    ctx.lineTo(-ROCKET_W / 2 + 4, 14);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.moveTo(ROCKET_W / 2 - 2, 8);
+    ctx.lineTo(ROCKET_W / 2 + 8, 16);
+    ctx.lineTo(ROCKET_W / 2 - 4, 14);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  function drawRocketThrustFlame() {
+    const thr = rocket.thrusting ? 1 : 0.25;
+    const flameH = 12 + rand(0, 6);
+    const grad = ctx.createLinearGradient(rocket.x, rocket.y + ROCKET_H / 2, rocket.x, rocket.y + ROCKET_H / 2 + flameH);
+    grad.addColorStop(0, 'rgba(255,200,50,1)');
+    grad.addColorStop(0.4, 'rgba(255,100,0,0.9)');
+    grad.addColorStop(1, 'rgba(255,50,0,0)');
+    ctx.fillStyle = grad;
+    ctx.shadowColor = '#ff6600';
+    ctx.shadowBlur = 12 * thr;
+    ctx.beginPath();
+    ctx.moveTo(rocket.x - 6, rocket.y + ROCKET_H / 2);
+    ctx.quadraticCurveTo(rocket.x, rocket.y + ROCKET_H / 2 + flameH, rocket.x + 6, rocket.y + ROCKET_H / 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // Spawn flame particles
+    if (rocket.thrusting || frame % 3 === 0) {
+      spawnFlame(rocket.x, rocket.y + ROCKET_H / 2, rocket.angle);
+    }
+  }
+
+  // --- UI Overlays ---
+  function drawHUD() {
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 18px "Segoe UI", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.shadowColor = 'rgba(0,0,0,0.8)';
+    ctx.shadowBlur = 4;
+    ctx.fillText(score, W / 2, 50);
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = '#aaaacc';
+    ctx.font = '12px "Segoe UI", sans-serif';
+    ctx.fillText(`BEST: ${bestScore}`, W / 2, 72);
+  }
+
+  function drawStartScreen() {
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, 0, W, H);
+
+    // Title
+    ctx.fillStyle = '#00ffcc';
+    ctx.font = 'bold 42px "Segoe UI", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.shadowColor = '#00ffcc';
+    ctx.shadowBlur = 20;
+    ctx.fillText('FLAPPY ROCKET', W / 2, H * 0.28);
+    ctx.shadowBlur = 0;
+
+    // Subtitle
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '16px "Segoe UI", sans-serif';
+    ctx.fillText('Fly through the laser gates!', W / 2, H * 0.34);
+
+    // Rocket icon
+    ctx.save();
+    ctx.translate(W / 2, H * 0.46);
+    ctx.rotate(-0.3);
+    const bodyGrad = ctx.createLinearGradient(-ROCKET_W / 2, 0, ROCKET_W / 2, 0);
+    bodyGrad.addColorStop(0, '#ff4466');
+    bodyGrad.addColorStop(1, '#ff7799');
+    ctx.fillStyle = bodyGrad;
+    ctx.shadowColor = '#ff4466';
+    ctx.shadowBlur = 16;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, ROCKET_W / 2, ROCKET_H / 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+
+    // Instruction
+    ctx.fillStyle = '#aaddff';
+    ctx.font = 'bold 16px "Segoe UI", sans-serif';
+    ctx.fillText('TAP, CLICK or SPACE to start', W / 2, H * 0.72);
+
+    // Animated pulse
+    const pulse = 0.6 + 0.4 * Math.sin(frame * 0.06);
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('►', W / 2, H * 0.78);
+    ctx.globalAlpha = 1;
+  }
+
+  function drawGameOverScreen() {
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = '#ff4466';
+    ctx.font = 'bold 38px "Segoe UI", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.shadowColor = '#ff4466';
+    ctx.shadowBlur = 20;
+    ctx.fillText('GAME OVER', W / 2, H * 0.28);
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 22px "Segoe UI", sans-serif';
+    ctx.fillText(`Score: ${score}`, W / 2, H * 0.38);
+
+    if (score >= bestScore && score > 0) {
+      ctx.fillStyle = '#ffcc00';
+      ctx.font = '16px "Segoe UI", sans-serif';
+      ctx.fillText('★ NEW BEST! ★', W / 2, H * 0.43);
+    } else {
+      ctx.fillStyle = '#aaaacc';
+      ctx.font = '16px "Segoe UI", sans-serif';
+      ctx.fillText(`Best: ${bestScore}`, W / 2, H * 0.43);
+    }
+
+    // Restart button
+    const btnX = W / 2 - 80;
+    const btnY = H * 0.52;
+    const btnW = 160;
+    const btnH = 44;
+
+    const hover = mouse.x >= btnX && mouse.x <= btnX + btnW && mouse.y >= btnY && mouse.y <= btnY + btnH;
+
+    ctx.fillStyle = hover ? '#ff6699' : '#ff4466';
+    ctx.shadowColor = '#ff4466';
+    ctx.shadowBlur = hover ? 18 : 10;
+    roundRect(ctx, btnX, btnY, btnW, btnH, 8);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 18px "Segoe UI", sans-serif';
+    ctx.fillText('RESTART', W / 2, btnY + 30);
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+
+  // --- Mouse tracking ---
+  const mouse = { x: -999, y: -999 };
+  function getCanvasPos(e) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) * dpr,
+      y: (e.clientY - rect.top) * dpr
+    };
+  }
+  canvas.addEventListener('mousemove', (e) => {
+    mouse = getCanvasPos(e);
+  });
+  canvas.addEventListener('mousedown', (e) => {
+    mouse = getCanvasPos(e);
+    handleInput();
+  });
+  canvas.addEventListener('mouseup', () => {});
+  canvas.addEventListener('mouseleave', () => { mouse.x = -999; });
+
+  // Touch
+  canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    const t = e.touches[0];
+    if (t) {
+      mouse = { x: t.clientX * dpr, y: t.clientY * dpr };
+    }
+    handleInput();
+  }, { passive: false });
+  canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    const t = e.touches[0];
+    if (t) {
+      mouse = { x: t.clientX * dpr, y: t.clientY * dpr };
+    }
+  }, { passive: false });
+
+  // Keyboard
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' || e.code === 'ArrowUp') {
+      e.preventDefault();
+      handleInput();
+    }
+  });
+
+  // --- Input ---
+  function handleInput() {
+    if (state === 'start') {
+      startGame();
+    } else if (state === 'playing') {
+      thrust();
+    } else if (state === 'over') {
+      // Check restart button
+      const btnX = W / 2 - 80;
+      const btnY = H * 0.52;
+      const btnW = 160;
+      const btnH = 44;
+      if (mouse.x >= btnX && mouse.x <= btnX + btnW && mouse.y >= btnY && mouse.y <= btnY + btnH) {
+        restartGame();
+      } else {
+        restartGame();
+      }
+    }
+  }
+
+  // --- Game lifecycle ---
+  function startGame() {
+    state = 'playing';
+    score = 0;
+    gameSpeed = 2.8;
+    speedTimer = 0;
+    gates = [];
+    particles = [];
+    resetRocket();
+    spawnGate();
+  }
+
+  function thrust() {
+    rocket.vy = BASE_THRUST;
+    rocket.thrusting = true;
+    setTimeout(() => { rocket.thrusting = false; }, 100);
+  }
+
+  function crash() {
+    state = 'over';
+    spawnExplosion(rocket.x, rocket.y);
+    if (score > bestScore) {
+      bestScore = score;
+      try { localStorage.setItem('flappyRocketBest', bestScore); } catch (e) {}
+    }
+  }
+
+  function restartGame() {
+    state = 'start';
+    score = 0;
+    gameSpeed = 2.8;
+    speedTimer = 0;
+    gates = [];
+    particles = [];
+    resetRocket();
+    spawnGate();
+  }
+
+  // --- Update ---
+  function update() {
+    frame++;
+
+    // Stars always scroll
+    for (const s of stars) {
+      s.x -= s.speed;
+      if (s.x < 0) {
+        s.x = W;
+        s.y = Math.random() * H;
+      }
+    }
+
+    if (state === 'playing') {
+      // Rocket physics
+      rocket.vy += BASE_GRAVITY;
+      rocket.vy = clamp(rocket.vy, -12, 8);
+      rocket.y += rocket.vy;
+
+      // Angle based on velocity
+      const targetAngle = clamp(rocket.vy * 0.08, -0.4, 0.45);
+      rocket.angle += (targetAngle - rocket.angle) * 0.15;
+
+      // Move gates
+      for (let i = gates.length - 1; i >= 0; i--) {
+        gates[i].x -= gameSpeed;
+
+        // Score
+        if (!gates[i].scored && gates[i].x + GATE_W < rocket.x) {
+          gates[i].scored = true;
+          score++;
+        }
+
+        // Remove offscreen
+        if (gates[i].x + GATE_W < -10) {
+          gates.splice(i, 1);
+        }
+      }
+
+      // Spawn gates
+      const lastGate = gates[gates.length - 1];
+      if (!lastGate || lastGate.x < W - GATE_SPAWN_DIST) {
+        spawnGate();
+      }
+
+      // Increase speed gradually
+      speedTimer++;
+      if (speedTimer % 600 === 0 && gameSpeed < MAX_SPEED) {
+        gameSpeed += 0.25;
+      }
+
+      // Collisions
+      if (checkGateCollision() || checkEdgeCollision()) {
+        crash();
+      }
+    }
+
+    // Update particles always
+    updateParticles();
+  }
+
+  // --- Draw ---
+  function draw() {
+    drawBackground();
+
+    // Draw gates
+    for (const g of gates) {
+      drawGate(g);
+    }
+
+    // Draw particles behind rocket
+    drawParticles();
+
+    // Draw rocket
+    if (state !== 'over' || frame < 30) {
+      if (state === 'playing') {
+        drawRocketThrustFlame();
+      }
+      drawRocket();
+    }
+
+    // HUD
+    if (state === 'playing') {
+      drawHUD();
+    }
+
+    // Overlays
+    if (state === 'start') {
+      drawStartScreen();
+    } else if (state === 'over') {
+      drawGameOverScreen();
+    }
+  }
+
+  // --- Loop ---
+  let lastTime = 0;
+  const TARGET_DT = 1000 / 60;
+  let accumulator = 0;
+
+  function loop(timestamp) {
+    const dt = timestamp - lastTime;
+    lastTime = timestamp;
+
+    if (dt > 0) accumulator += dt;
+    while (accumulator >= TARGET_DT) {
+      update();
+      accumulator -= TARGET_DT;
+    }
+
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  // --- Resize ---
+  function resize() {
+    W = window.innerWidth * dpr;
+    H = window.innerHeight * dpr;
+    canvas.width = W;
+    canvas.height = H;
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    initStars();
+    if (state === 'start' || state === 'over') {
+      resetRocket();
+      if (gates.length === 0) spawnGate();
+    }
+  }
+  window.addEventListener('resize', resize);
+
+  // --- Init ---
+  function init() {
+    resize();
+    try {
+      bestScore = parseInt(localStorage.getItem('flappyRocketBest'), 10) || 0;
+    } catch (e) {
+      bestScore = 0;
+    }
+    resetRocket();
+    spawnGate();
+    lastTime = performance.now();
+    requestAnimationFrame(loop);
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>
