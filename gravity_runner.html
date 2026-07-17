@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cyber-Neon Gravity Runner</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: #0d0d1a;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+        }
+        
+        canvas {
+            border: 2px solid #00ffff;
+            box-shadow: 0 0 20px #00ffff, 0 0 40px #00ffff;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    
+    <script>
+        // ============================================
+        // CYBER-NEON GRAVITY RUNNER
+        // A gravity-flipping endless runner game
+        // ============================================
+        
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Canvas dimensions
+        const WIDTH = 900;
+        const HEIGHT = 500;
+        canvas.width = WIDTH;
+        canvas.height = HEIGHT;
+        
+        // Game constants
+        const GRAVITY_ACCEL = 0.6;
+        const MAX_GRAVITY_SPEED = 14;
+        const PLAYER_SIZE = 30;
+        const PLAYER_SPEED_X = 6;
+        const FLOOR_Y = HEIGHT - 50;
+        const CEILING_Y = 50;
+        const OBSTACLE_SPEED = 5;
+        const OBSTACLE_GAP = 2200;
+        const NEON_COLORS = ['#00ffff', '#ff00ff', '#ffff00', '#00ff00', '#ff0080'];
+        
+        // Game state
+        let gameState = 'start'; // 'start', 'playing', 'gameover'
+        let score = 0;
+        let highScore = 0;
+        let animationId;
+        let lastTime = 0;
+        let scoreAccumulator = 0;
+        
+        // Player object
+        const player = {
+            x: 150,
+            y: FLOOR_Y - PLAYER_SIZE,
+            width: PLAYER_SIZE,
+            height: PLAYER_SIZE,
+            vy: 0,
+            onFloor: true,
+            color: '#00ffff'
+        };
+        
+        // Obstacles array
+        let obstacles = [];
+        let obstacleTimer = 0;
+        
+        // Particle system for effects
+        let particles = [];
+        
+        // ============================================
+        // PARTICLE CLASS
+        // ============================================
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.vx = (Math.random() - 0.5) * 8;
+                this.vy = (Math.random() - 0.5) * 8;
+                this.life = 1.0;
+                this.decay = 0.02 + Math.random() * 0.03;
+                this.color = color;
+                this.size = 2 + Math.random() * 4;
+            }
+            
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.life -= this.decay;
+                this.size *= 0.96;
+            }
+            
+            draw(ctx) {
+                if (this.life <= 0) return;
+                ctx.save();
+                ctx.globalAlpha = this.life;
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = this.color;
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, this.size, this.size);
+                ctx.restore();
+            }
+        }
+        
+        // ============================================
+        // OBSTACLE CLASS
+        // ============================================
+        class Obstacle {
+            constructor(x, y, onFloor) {
+                this.x = x;
+                this.y = y;
+                this.width = 25 + Math.random() * 25;
+                this.height = 20 + Math.random() * 30;
+                this.onFloor = onFloor;
+                this.passed = false;
+                this.color = NEON_COLORS[Math.floor(Math.random() * NEON_COLORS.length)];
+                this.type = Math.random() > 0.5 ? 'block' : 'triangle';
+            }
+            
+            update() {
+                this.x -= OBSTACLE_SPEED;
+            }
+            
+            draw(ctx) {
+                ctx.save();
+                ctx.shadowBlur = 15;
+                ctx.shadowColor = this.color;
+                ctx.fillStyle = this.color;
+                
+                if (this.type === 'block') {
+                    ctx.fillRect(this.x, this.y, this.width, this.height);
+                    // Inner glow
+                    ctx.strokeStyle = '#ffffff';
+                    ctx.lineWidth = 1;
+                    ctx.shadowBlur = 5;
+                    ctx.strokeRect(this.x + 3, this.y + 3, this.width - 6, this.height - 6);
+                } else {
+                    // Triangle pointing toward player
+                    ctx.beginPath();
+                    if (this.onFloor) {
+                        ctx.moveTo(this.x, this.y + this.height);
+                        ctx.lineTo(this.x + this.width / 2, this.y);
+                        ctx.lineTo(this.x + this.width, this.y + this.height);
+                    } else {
+                        ctx.moveTo(this.x, this.y);
+                        ctx.lineTo(this.x + this.width / 2, this.y + this.height);
+                        ctx.lineTo(this.x + this.width, this.y);
+                    }
+                    ctx.closePath();
+                    ctx.fill();
+                }
+                
+                ctx.restore();
+            }
+            
+            // Bounding box for collision
+            getBounds() {
+                if (this.type === 'triangle') {
+                    // Simplified collision using bounding box
+                    return {
+                        x: this.x,
+                        y: this.y,
+                        width: this.width,
+                        height: this.height
+                    };
+                }
+                return {
+                    x: this.x,
+                    y: this.y,
+                    width: this.width,
+                    height: this.height
+                };
+            }
+        }
+        
+        // ============================================
+        // COLLISION DETECTION
+        // ============================================
+        function checkCollision(a, b) {
+            return a.x < b.x + b.width &&
+                   a.x + a.width > b.x &&
+                   a.y < b.y + b.height &&
+                   a.y + a.height > b.y;
+        }
+        
+        // ============================================
+        // SPAWN OBSTACLES
+        // ============================================
+        function spawnObstacle() {
+            const floorY = FLOOR_Y - (20 + Math.random() * 30);
+            const ceilingY = CEILING_Y + (5 + Math.random() * 15);
+            
+            // Randomly spawn on floor, ceiling, or both
+            const spawnType = Math.random();
+            
+            if (spawnType < 0.4) {
+                // Floor only
+                obstacles.push(new Obstacle(WIDTH, floorY, true));
+            } else if (spawnType < 0.8) {
+                // Ceiling only
+                obstacles.push(new Obstacle(WIDTH, ceilingY, false));
+            } else {
+                // Both - floor and ceiling at same time
+                obstacles.push(new Obstacle(WIDTH, floorY, true));
+                obstacles.push(new Obstacle(WIDTH, ceilingY, false));
+            }
+        }
+        
+        // ============================================
+        // RESET GAME
+        // ============================================
+        function resetGame() {
+            player.x = 150;
+            player.y = FLOOR_Y - PLAYER_SIZE;
+            player.vy = 0;
+            player.onFloor = true;
+            obstacles = [];
+            particles = [];
+            score = 0;
+            scoreAccumulator = 0;
+            obstacleTimer = 0;
+        }
+        
+        // ============================================
+        // FLIP GRAVITY
+        // ============================================
+        function flipGravity() {
+            if (gameState === 'start') {
+                resetGame();
+                gameState = 'playing';
+                return;
+            }
+            
+            if (gameState === 'gameover') {
+                resetGame();
+                gameState = 'playing';
+                return;
+            }
+            
+            if (gameState === 'playing') {
+                player.onFloor = !player.onFloor;
+                player.vy = 0;
+                
+                // Spawn particles at flip point
+                for (let i = 0; i < 15; i++) {
+                    particles.push(new Particle(
+                        player.x + player.width / 2,
+                        player.onFloor ? player.y + player.height : player.y,
+                        '#ffffff'
+                    ));
+                }
+            }
+        }
+        
+        // ============================================
+        // DRAW BACKGROUND
+        // ============================================
+        function drawBackground() {
+            // Dark background
+            ctx.fillStyle = '#0d0d1a';
+            ctx.fillRect(0, 0, WIDTH, HEIGHT);
+            
+            // Grid lines
+            ctx.strokeStyle = 'rgba(0, 255, 255, 0.1)';
+            ctx.lineWidth = 1;
+            const gridSize = 40;
+            const offset = (Date.now() / 50) % gridSize;
+            
+            // Vertical scrolling grid
+            for (let x = -offset; x < WIDTH; x += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, HEIGHT);
+                ctx.stroke();
+            }
+            
+            // Horizontal grid
+            for (let y = 0; y < HEIGHT; y += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(WIDTH, y);
+                ctx.stroke();
+            }
+            
+            // Floor and ceiling lines with neon glow
+            ctx.save();
+            ctx.shadowBlur = 20;
+            ctx.shadowColor = '#ff00ff';
+            ctx.strokeStyle = '#ff00ff';
+            ctx.lineWidth = 2;
+            
+            // Floor
+            ctx.beginPath();
+            ctx.moveTo(0, FLOOR_Y);
+            ctx.lineTo(WIDTH, FLOOR_Y);
+            ctx.stroke();
+            
+            // Ceiling
+            ctx.beginPath();
+            ctx.moveTo(0, CEILING_Y);
+            ctx.lineTo(WIDTH, CEILING_Y);
+            ctx.stroke();
+            
+            ctx.restore();
+        }
+        
+        // ============================================
+        // DRAW PLAYER
+        // ============================================
+        function drawPlayer() {
+            ctx.save();
+            ctx.shadowBlur = 25;
+            ctx.shadowColor = player.color;
+            ctx.fillStyle = player.color;
+            ctx.fillRect(player.x, player.y, player.width, player.height);
+            
+            // Inner bright core
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = '#ffffff';
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(player.x + 5, player.y + 5, player.width - 10, player.height - 10);
+            
+            // Trail effect
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = player.color;
+            ctx.fillStyle = player.color;
+            ctx.globalAlpha = 0.3;
+            ctx.fillRect(player.x - 15, player.y + 5, 15, player.height - 10);
+            
+            ctx.restore();
+        }
+        
+        // ============================================
+        // DRAW SCORE
+        // ============================================
+        function drawScore() {
+            ctx.save();
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = '#ffff00';
+            ctx.fillStyle = '#ffff00';
+            ctx.font = 'bold 28px Courier New';
+            ctx.textAlign = 'center';
+            ctx.fillText(`SCORE: ${score}`, WIDTH / 2, 35);
+            
+            // High score
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = '#ff0080';
+            ctx.fillStyle = '#ff0080';
+            ctx.font = 'bold 18px Courier New';
+            ctx.fillText(`HIGH: ${highScore}`, WIDTH / 2, 55);
+            ctx.restore();
+        }
+        
+        // ============================================
+        // DRAW START SCREEN
+        // ============================================
+        function drawStartScreen() {
+            // Semi-transparent overlay
+            ctx.fillStyle = 'rgba(13, 13, 26, 0.85)';
+            ctx.fillRect(0, 0, WIDTH, HEIGHT);
+            
+            // Title
+            ctx.save();
+            ctx.shadowBlur = 30;
+            ctx.shadowColor = '#00ffff';
+            ctx.fillStyle = '#00ffff';
+            ctx.font = 'bold 52px Courier New';
+            ctx.textAlign = 'center';
+            ctx.fillText('CYBER-NEON', WIDTH / 2, HEIGHT / 2 - 40);
+            ctx.shadowColor = '#ff00ff';
+            ctx.fillStyle = '#ff00ff';
+            ctx.fillText('GRAVITY RUNNER', WIDTH / 2, HEIGHT / 2 + 20);
+            
+            // Subtitle
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = '#ffff00';
+            ctx.fillStyle = '#ffff00';
+            ctx.font = 'bold 20px Courier New';
+            ctx.fillText('Press SPACE or CLICK to Start', WIDTH / 2, HEIGHT / 2 + 80);
+            
+            // Instructions
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = '#00ff00';
+            ctx.fillStyle = '#00ff00';
+            ctx.font = '16px Courier New';
+            ctx.fillText('FLIP GRAVITY TO AVOID OBSTACLES', WIDTH / 2, HEIGHT / 2 + 120);
+            ctx.fillText('Navigate through neon obstacles!', WIDTH / 2, HEIGHT / 2 + 145);
+            ctx.restore();
+        }
+        
+        // ============================================
+        // DRAW GAME OVER SCREEN
+        // ============================================
+        function drawGameOverScreen() {
+            // Semi-transparent overlay
+            ctx.fillStyle = 'rgba(13, 13, 26, 0.85)';
+            ctx.fillRect(0, 0, WIDTH, HEIGHT);
+            
+            ctx.save();
+            ctx.shadowBlur = 30;
+            ctx.shadowColor = '#ff0000';
+            ctx.fillStyle = '#ff0000';
+            ctx.font = 'bold 60px Courier New';
+            ctx.textAlign = 'center';
+            ctx.fillText('GAME OVER', WIDTH / 2, HEIGHT / 2 - 40);
+            
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = '#ffff00';
+            ctx.fillStyle = '#ffff00';
+            ctx.font = 'bold 32px Courier New';
+            ctx.fillText(`Score: ${score}`, WIDTH / 2, HEIGHT / 2 + 20);
+            
+            if (score >= highScore && score > 0) {
+                ctx.shadowBlur = 20;
+                ctx.shadowColor = '#00ff00';
+                ctx.fillStyle = '#00ff00';
+                ctx.font = 'bold 24px Courier New';
+                ctx.fillText('NEW HIGH SCORE!', WIDTH / 2, HEIGHT / 2 + 60);
+            }
+            
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = '#00ffff';
+            ctx.fillStyle = '#00ffff';
+            ctx.font = 'bold 18px Courier New';
+            ctx.fillText('Press SPACE or CLICK to Restart', WIDTH / 2, HEIGHT / 2 + 110);
+            ctx.restore();
+        }
+        
+        // ============================================
+        // UPDATE GAME LOGIC
+        // ============================================
+        function update(deltaTime) {
+            if (gameState !== 'playing') return;
+            
+            // Apply gravity
+            const gravityDir = player.onFloor ? 1 : -1;
+            player.vy += GRAVITY_ACCEL * gravityDir;
+            player.vy = Math.max(-MAX_GRAVITY_SPEED, Math.min(MAX_GRAVITY_SPEED, player.vy));
+            player.y += player.vy;
+            
+            // Clamp player to floor/ceiling
+            if (player.onFloor) {
+                if (player.y + player.height >= FLOOR_Y) {
+                    player.y = FLOOR_Y - player.height;
+                    player.vy = 0;
+                }
+            } else {
+                if (player.y <= CEILING_Y) {
+                    player.y = CEILING_Y;
+                    player.vy = 0;
+                }
+            }
+            
+            // Update obstacles
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                obstacles[i].update();
+                
+                // Remove off-screen obstacles
+                if (obstacles[i].x + obstacles[i].width < 0) {
+                    obstacles.splice(i, 1);
+                    continue;
+                }
+                
+                // Check collision
+                if (checkCollision(player, obstacles[i].getBounds())) {
+                    gameState = 'gameover';
+                    
+                    if (score > highScore) {
+                        highScore = score;
+                    }
+                    
+                    // Explosion particles
+                    for (let j = 0; j < 30; j++) {
+                        particles.push(new Particle(
+                            player.x + player.width / 2,
+                            player.y + player.height / 2,
+                            '#ff0000'
+                        ));
+                    }
+                }
+            }
+            
+            // Spawn new obstacles
+            obstacleTimer += OBSTACLE_SPEED;
+            if (obstacleTimer >= OBSTACLE_GAP) {
+                spawnObstacle();
+                obstacleTimer = 0;
+            }
+            
+            // Update score
+            scoreAccumulator += deltaTime;
+            if (scoreAccumulator >= 100) {
+                score++;
+                scoreAccumulator = 0;
+            }
+            
+            // Update particles
+            for (let i = particles.length - 1; i >= 0; i--) {
+                particles[i].update();
+                if (particles[i].life <= 0) {
+                    particles.splice(i, 1);
+                }
+            }
+        }
+        
+        // ============================================
+        // MAIN RENDER LOOP
+        // ============================================
+        function render() {
+            drawBackground();
+            
+            // Draw obstacles
+            obstacles.forEach(obstacle => obstacle.draw(ctx));
+            
+            // Draw player
+            if (gameState !== 'gameover') {
+                drawPlayer();
+            }
+            
+            // Draw particles
+            particles.forEach(particle => particle.draw(ctx));
+            
+            // Draw score
+            if (gameState === 'playing') {
+                drawScore();
+            }
+            
+            // Draw overlays
+            if (gameState === 'start') {
+                drawStartScreen();
+            } else if (gameState === 'gameover') {
+                drawGameOverScreen();
+            }
+        }
+        
+        // ============================================
+        // GAME LOOP
+        // ============================================
+        function gameLoop(timestamp) {
+            const deltaTime = timestamp - lastTime;
+            lastTime = timestamp;
+            
+            update(deltaTime);
+            render();
+            
+            animationId = requestAnimationFrame(gameLoop);
+        }
+        
+        // ============================================
+        // EVENT LISTENERS
+        // ============================================
+        function handleInput(e) {
+            if (e.type === 'keydown' && e.code !== 'Space') return;
+            if (e.type === 'keydown') e.preventDefault();
+            flipGravity();
+        }
+        
+        document.addEventListener('keydown', handleInput);
+        canvas.addEventListener('mousedown', handleInput);
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            handleInput(e);
+        });
+        
+        // ============================================
+        // INITIALIZE GAME
+        // ============================================
+        function init() {
+            resetGame();
+            gameState = 'start';
+            lastTime = performance.now();
+            gameLoop(lastTime);
+        }
+        
+        // Start the game
+        init();
+    </script>
+</body>
+</html>
