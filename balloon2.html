@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Balloon Pop</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    width: 100vw; height: 100vh; overflow: hidden;
+    background: #000; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
+  }
+  canvas {
+    display: block; position: absolute; top: 0; left: 0;
+    touch-action: none;
+  }
+  .overlay {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    pointer-events: none; z-index: 10;
+  }
+  .overlay.active { pointer-events: auto; }
+  .screen {
+    background: rgba(0,0,0,0.55); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    border-radius: 24px; padding: 40px 50px; text-align: center;
+    color: #fff; box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+    max-width: 90vw; transform: translateY(0);
+  }
+  .screen h1 {
+    font-size: clamp(36px, 8vw, 64px); margin-bottom: 8px;
+    text-shadow: 0 2px 12px rgba(0,0,0,0.5);
+    background: linear-gradient(135deg, #ff6b6b, #feca57, #48dbfb, #ff9ff3);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .screen h2 { font-size: clamp(20px, 5vw, 32px); margin-bottom: 12px; }
+  .screen p { font-size: clamp(14px, 3.5vw, 18px); margin-bottom: 8px; opacity: 0.9; }
+  .screen .big { font-size: clamp(28px, 7vw, 48px); font-weight: bold; color: #feca57; }
+  .btn {
+    margin-top: 20px; padding: 14px 40px; font-size: clamp(16px, 4vw, 22px);
+    border: none; border-radius: 50px; cursor: pointer;
+    background: linear-gradient(135deg, #ff6b6b, #ee5a24);
+    color: #fff; font-weight: bold; letter-spacing: 1px;
+    box-shadow: 0 8px 24px rgba(238,90,36,0.4);
+    transition: transform 0.15s, box-shadow 0.15s;
+    pointer-events: auto;
+  }
+  .btn:active { transform: scale(0.95); box-shadow: 0 4px 12px rgba(238,90,36,0.3); }
+  #startScreen .screen { display: block; }
+  #gameOverScreen .screen { display: none; }
+  #startScreen.hidden .screen { display: none; }
+  #startScreen.hidden #gameOverScreen .screen { display: block; }
+  #gameOverScreen.hidden .screen { display: none; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="startScreen" class="overlay active">
+  <div class="screen">
+    <h1>🎈 Balloon Pop</h1>
+    <p>Pop the balloons before they escape!</p>
+    <p style="font-size:14px; opacity:0.7;">Tap or click to pop • Watch for bombs ⚡ and gold balloons ⭐</p>
+    <button class="btn" id="startBtn">▶ Play</button>
+  </div>
+</div>
+
+<div id="gameOverScreen" class="overlay">
+  <div class="screen">
+    <h2>Game Over</h2>
+    <p>Score</p>
+    <p class="big" id="finalScore">0</p>
+    <p>High Score</p>
+    <p class="big" id="highScore">0</p>
+    <button class="btn" id="restartBtn">↺ Play Again</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const startScreen = document.getElementById('startScreen');
+  const gameOverScreen = document.getElementById('gameOverScreen');
+  const finalScoreEl = document.getElementById('finalScore');
+  const highScoreEl = document.getElementById('highScore');
+  const startBtn = document.getElementById('startBtn');
+  const restartBtn = document.getElementById('restartBtn');
+
+  let W, H, DPR;
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W * DPR;
+    canvas.height = H * DPR;
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  window.addEventListener('orientationchange', () => setTimeout(resize, 100));
+  resize();
+
+  // Audio
+  let audioCtx = null;
+  function ensureAudio() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  }
+  function playPop() {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(800, audioCtx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(200, audioCtx.currentTime + 0.08);
+    gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(); osc.stop(audioCtx.currentTime + 0.1);
+    // noise burst
+    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.05, audioCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * 0.3;
+    const noise = audioCtx.createBufferSource();
+    const g2 = audioCtx.createGain();
+    noise.buffer = buf;
+    g2.gain.setValueAtTime(0.08, audioCtx.currentTime);
+    g2.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.05);
+    noise.connect(g2).connect(audioCtx.destination);
+    noise.start();
+  }
+  function playMiss() {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+    osc.frequency.linearRampToValueAtTime(80, audioCtx.currentTime + 0.25);
+    gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+    gain.gain.linearRampToValueAtTime(0.001, audioCtx.currentTime + 0.3);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(); osc.stop(audioCtx.currentTime + 0.3);
+  }
+  function playGameOver() {
+    if (!audioCtx) return;
+    [400, 350, 280, 200].forEach((f, i) => {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.value = f;
+      gain.gain.setValueAtTime(0.12, audioCtx.currentTime + i * 0.15);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + i * 0.15 + 0.2);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(audioCtx.currentTime + i * 0.15);
+      osc.stop(audioCtx.currentTime + i * 0.15 + 0.25);
+    });
+  }
+  function playSpecial() {
+    if (!audioCtx) return;
+    [600, 800, 1000].forEach((f, i) => {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = f;
+      gain.gain.setValueAtTime(0.1, audioCtx.currentTime + i * 0.08);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + i * 0.08 + 0.1);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(audioCtx.currentTime + i * 0.08);
+      osc.stop(audioCtx.currentTime + i * 0.08 + 0.12);
+    });
+  }
+
+  // Colors
+  const BALLOON_COLORS = [
+    { fill: '#ff6b6b', shine: '#ff9e9e', dark: '#c0392b' },
+    { fill: '#48dbfb', shine: '#7ee8ff', dark: '#0abde3' },
+    { fill: '#feca57', shine: '#fff3a3', dark: '#ff9f43' },
+    { fill: '#1dd1a1', shine: '#7af2d4', dark: '#10ac84' },
+    { fill: '#a55eea', shine: '#c89bff', dark: '#8854d0' },
+    { fill: '#ff9ff3', shine: '#ffcdf7', dark: '#f368e0' },
+    { fill: '#ff9f43', shine: '#ffc78e', dark: '#ee5a24' },
+    { fill: '#54a0ff', shine: '#8cbfff', dark: '#2e86de' },
+  ];
+  const GOLD_COLOR = { fill: '#ffd700', shine: '#ffec8b', dark: '#ffaa00', special: true };
+  const BOMB_COLOR = { fill: '#2d3436', shine: '#636e72', dark: '#000000', bomb: true };
+
+  // Balloon
+  class Balloon {
+    constructor() {
+      const isSpecial = Math.random() < 0.08;
+      const isBomb = isSpecial && Math.random() < 0.4;
+      const colorSource = isBomb ? BOMB_COLOR : (isSpecial && !isBomb ? GOLD_COLOR : BALLOON_COLORS[Math.floor(Math.random() * BALLOON_COLORS.length)]);
+      this.color = colorSource;
+      this.baseX = Math.random() * (W - 80) + 40;
+      this.x = this.baseX;
+      this.y = H + 60 + Math.random() * 40;
+      this.radius = 22 + Math.random() * 14;
+      this.baseSpeed = 0.8 + Math.random() * 0.9;
+      this.speed = this.baseSpeed;
+      this.wobbleAmp = 20 + Math.random() * 30;
+      this.wobbleFreq = 0.002 + Math.random() * 0.002;
+      this.wobbleOffset = Math.random() * Math.PI * 2;
+      this.time = 0;
+      this.popped = false;
+      this.popTime = 0;
+      this.visible = true;
+      this.scale = 1;
+      this.rotation = (Math.random() - 0.5) * 0.3;
+    }
+    update(dt, speedMultiplier) {
+      if (this.popped) {
+        this.popTime += dt;
+        this.scale = 1 + this.popTime * 6;
+        if (this.popTime > 0.15) this.visible = false;
+        return;
+      }
+      this.time += dt;
+      this.y -= this.speed * speedMultiplier;
+      this.x = this.baseX + Math.sin(this.time * this.wobbleFreq + this.wobbleOffset) * this.wobbleAmp;
+    }
+    draw(ctx) {
+      if (!this.visible) return;
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.rotate(this.rotation);
+      ctx.scale(this.scale, this.scale);
+
+      const r = this.radius;
+      // string
+      ctx.strokeStyle = '#bdc3c7';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(0, r);
+      const sway = Math.sin(this.time * 0.005 + this.wobbleOffset) * 8;
+      ctx.quadraticCurveTo(sway * 0.5, r + 15, sway, r + 30 + Math.random() * 3);
+      ctx.stroke();
+
+      // balloon body
+      ctx.beginPath();
+      ctx.ellipse(0, 0, r, r * 1.15, 0, 0, Math.PI * 2);
+      const grad = ctx.createRadialGradient(-r * 0.3, -r * 0.4, r * 0.1, 0, 0, r * 1.2);
+      grad.addColorStop(0, this.color.shine);
+      grad.addColorStop(0.6, this.color.fill);
+      grad.addColorStop(1, this.color.dark);
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      // knot
+      ctx.beginPath();
+      ctx.moveTo(-3, r * 1.1);
+      ctx.lineTo(0, r * 1.25);
+      ctx.lineTo(3, r * 1.1);
+      ctx.closePath();
+      ctx.fillStyle = this.color.dark;
+      ctx.fill();
+
+      // highlight
+      ctx.beginPath();
+      ctx.ellipse(-r * 0.3, -r * 0.35, r * 0.22, r * 0.35, -0.3, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.55)';
+      ctx.fill();
+
+      // bomb icon
+      if (this.color.bomb) {
+        ctx.fillStyle = '#f1c40f';
+        ctx.font = `bold ${r * 0.8}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('⚡', 0, 0);
+      }
+      // gold star
+      if (this.color.special && !this.color.bomb) {
+        ctx.fillStyle = '#fff';
+        ctx.font = `${r * 0.7}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('⭐', 0, -2);
+      }
+
+      ctx.restore();
+    }
+    hitTest(px, py) {
+      const dx = px - this.x;
+      const dy = py - this.y;
+      return Math.sqrt(dx * dx + dy * dy) < this.radius * 1.1;
+    }
+  }
+
+  // Particle
+  class Particle {
+    constructor(x, y, color) {
+      this.x = x; this.y = y;
+      this.vx = (Math.random() - 0.5) * 10;
+      this.vy = (Math.random() - 0.5) * 10 - 2;
+      this.life = 1;
+      this.decay = 0.02 + Math.random() * 0.03;
+      this.size = 2 + Math.random() * 4;
+      this.color = color;
+      this.gravity = 0.15;
+    }
+    update() {
+      this.x += this.vx;
+      this.y += this.vy;
+      this.vy += this.gravity;
+      this.vx *= 0.98;
+      this.life -= this.decay;
+    }
+    draw(ctx) {
+      ctx.globalAlpha = Math.max(0, this.life);
+      ctx.fillStyle = this.color;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // Cloud
+  class Cloud {
+    constructor() {
+      this.x = Math.random() * W;
+      this.y = Math.random() * H * 0.5;
+      this.w = 80 + Math.random() * 120;
+      this.h = 25 + Math.random() * 20;
+      this.speed = 0.15 + Math.random() * 0.3;
+      this.opacity = 0.15 + Math.random() * 0.2;
+    }
+    update() {
+      this.x += this.speed;
+      if (this.x > W + this.w) this.x = -this.w;
+    }
+    draw(ctx) {
+      ctx.fillStyle = `rgba(255,255,255,${this.opacity})`;
+      ctx.beginPath();
+      ctx.ellipse(this.x, this.y, this.w / 2, this.h / 2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(this.x - this.w * 0.25, this.y + 5, this.w * 0.3, this.h * 0.45, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(this.x + this.w * 0.25, this.y + 3, this.w * 0.28, this.h * 0.4, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Game state
+  const STATE = { MENU: 0, PLAYING: 1, GAMEOVER: 2 };
+  let state = STATE.MENU;
+  let score = 0;
+  let lives = 3;
+  let highScore = parseInt(localStorage.getItem('balloonPopHigh') || '0', 10);
+  let balloons = [];
+  let particles = [];
+  let clouds = [];
+  let spawnTimer = 0;
+  let spawnInterval = 1200;
+  let gameTime = 0;
+  let speedMultiplier = 1;
+  let shakeAmount = 0;
+  let lastTime = 0;
+
+  // Initialize clouds
+  for (let i = 0; i < 6; i++) clouds.push(new Cloud());
+
+  function spawnBalloon() {
+    balloons.push(new Balloon());
+  }
+
+  function popBalloon(b, px, py) {
+    if (b.popped) return;
+    b.popped = true;
+    b.popTime = 0;
+    b.scale = 1;
+    if (b.color.bomb) {
+      // Bomb costs a life
+      lives--;
+      shakeAmount = 12;
+      playMiss();
+      const missParticles = [];
+      for (let i = 0; i < 20; i++) missParticles.push(new Particle(b.x, b.y, '#7f8c8d'));
+      particles.push(...missParticles);
+      if (lives <= 0) endGame();
+    } else if (b.color.special) {
+      // Gold = bonus
+      score += 10;
+      playSpecial();
+      for (let i = 0; i < 25; i++) particles.push(new Particle(b.x, b.y, b.color.fill));
+      for (let i = 0; i < 8; i++) particles.push(new Particle(b.x, b.y, '#ffffff'));
+    } else {
+      score++;
+      playPop();
+      for (let i = 0; i < 16; i++) particles.push(new Particle(b.x, b.y, b.color.fill));
+      for (let i = 0; i < 4; i++) particles.push(new Particle(b.x, b.y, '#ffffff'));
+    }
+  }
+
+  function missBalloon(b) {
+    if (b.popped) return;
+    lives--;
+    shakeAmount = 8;
+    playMiss();
+    b.visible = false;
+    if (lives <= 0) endGame();
+  }
+
+  function endGame() {
+    state = STATE.GAMEOVER;
+    playGameOver();
+    if (score > highScore) {
+      highScore = score;
+      localStorage.setItem('balloonPopHigh', String(highScore));
+    }
+    finalScoreEl.textContent = score;
+    highScoreEl.textContent = highScore;
+    gameOverScreen.classList.add('active');
+    gameOverScreen.classList.remove('hidden');
+  }
+
+  function resetGame() {
+    score = 0;
+    lives = 3;
+    gameTime = 0;
+    speedMultiplier = 1;
+    spawnInterval = 1200;
+    spawnTimer = 0;
+    shakeAmount = 0;
+    balloons = [];
+    particles = [];
+    state = STATE.PLAYING;
+    gameOverScreen.classList.remove('active');
+    gameOverScreen.classList.add('hidden');
+    startScreen.classList.add('hidden');
+    startScreen.classList.remove('active');
+    lastTime = performance.now();
+  }
+
+  // Input
+  function getPos(e) {
+    if (e.touches && e.touches.length) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    if (e.changedTouches && e.changedTouches.length) return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
+    return { x: e.clientX, y: e.clientY };
+  }
+  function handleDown(e) {
+    if (state !== STATE.PLAYING) return;
+    ensureAudio();
+    const p = getPos(e);
+    // check reverse so topmost balloon is hit first
+    for (let i = balloons.length - 1; i >= 0; i--) {
+      if (balloons[i].hitTest(p.x, p.y)) {
+        popBalloon(balloons[i], p.x, p.y);
+        return;
+      }
+    }
+  }
+  canvas.addEventListener('mousedown', handleDown);
+  canvas.addEventListener('touchstart', (e) => { e.preventDefault(); handleDown(e); }, { passive: false });
+
+  startBtn.addEventListener('click', () => { ensureAudio(); resetGame(); });
+  startBtn.addEventListener('touchend', (e) => { e.preventDefault(); ensureAudio(); resetGame(); });
+  restartBtn.addEventListener('click', () => { ensureAudio(); resetGame(); });
+  restartBtn.addEventListener('touchend', (e) => { e.preventDefault(); ensureAudio(); resetGame(); });
+
+  // Gradient sky
+  function drawSky() {
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, '#87CEEB');
+    grad.addColorStop(0.5, '#B0E0E6');
+    grad.addColorStop(1, '#E0F7FA');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // HUD
+  function drawHUD() {
+    ctx.save();
+    // Score
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.roundRect(12, 12, 140, 44, 22);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 18px "Segoe UI", Tahoma, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`⭐ Score: ${score}`, 26, 34);
+
+    // Lives
+    const heartY = 34;
+    const heartX = W - 16 - (lives - 1) * 36;
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.roundRect(W - 12 - lives * 38, 12, lives * 38, 44, 22);
+    ctx.fill();
+    for (let i = 0; i < lives; i++) {
+      const hx = heartX - i * 36;
+      drawHeart(ctx, hx, heartY, 14, '#ff4757');
+    }
+    ctx.restore();
+  }
+  function drawHeart(ctx, x, y, size, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    const s = size / 2;
+    ctx.moveTo(x, y + s * 0.4);
+    ctx.bezierCurveTo(x, y - s * 0.2, x - s, y - s * 0.6, x - s, y + s * 0.1);
+    ctx.bezierCurveTo(x - s, y + s * 0.8, x, y + s * 1.2, x, y + s * 1.4);
+    ctx.bezierCurveTo(x, y + s * 1.2, x + s, y + s * 0.8, x + s, y + s * 0.1);
+    ctx.bezierCurveTo(x + s, y - s * 0.6, x, y - s * 0.2, x, y + s * 0.4);
+    ctx.fill();
+  }
+
+  // Shake helper
+  function applyShake() {
+    if (shakeAmount > 0) {
+      const sx = (Math.random() - 0.5) * shakeAmount;
+      const sy = (Math.random() - 0.5) * shakeAmount;
+      ctx.translate(sx, sy);
+      shakeAmount *= 0.9;
+      if (shakeAmount < 0.3) shakeAmount = 0;
+    }
+  }
+
+  // Loop
+  function loop(now) {
+    requestAnimationFrame(loop);
+    const dt = Math.min(now - lastTime, 50);
+    lastTime = now;
+
+    // Clouds
+    for (const c of clouds) c.update();
+
+    if (state === STATE.PLAYING) {
+      gameTime += dt;
+      // Difficulty ramp
+      speedMultiplier = 1 + gameTime * 0.00004;
+      spawnInterval = Math.max(450, 1200 - gameTime * 0.02);
+      spawnTimer += dt;
+      if (spawnTimer >= spawnInterval) {
+        spawnTimer = 0;
+        spawnBalloon();
+        if (Math.random() < 0.3) spawnBalloon(); // occasional double
+      }
+
+      for (let i = balloons.length - 1; i >= 0; i--) {
+        const b = balloons[i];
+        b.update(dt, speedMultiplier);
+        if (!b.popped && b.y < -60) {
+          missBalloon(b);
+        }
+        if (!b.visible) balloons.splice(i, 1);
+      }
+      for (let i = particles.length - 1; i >= 0; i--) {
+        particles[i].update();
+        if (particles[i].life <= 0) particles.splice(i, 1);
+      }
+    }
+
+    // Render
+    ctx.save();
+    applyShake();
+    drawSky();
+    for (const c of clouds) c.draw(ctx);
+    for (const b of balloons) b.draw(ctx);
+    for (const p of particles) p.draw(ctx);
+    ctx.restore();
+
+    if (state === STATE.PLAYING || state === STATE.GAMEOVER) {
+      drawHUD();
+    }
+  }
+
+  // Initial draw
+  drawSky();
+  for (const c of clouds) c.draw(ctx);
+  lastTime = performance.now();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
